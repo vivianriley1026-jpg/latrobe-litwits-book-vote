@@ -108,10 +108,17 @@ async function createPoll(req, res) {
       title: cleanText(entry.title, 120),
       author: cleanText(entry.author, 80)
     }))
-    .filter((entry) => entry.name && entry.title);
+    .filter((entry) => entry.name);
+
+  const bookEntries = cleanedEntries.filter((entry) => entry.title);
 
   if (cleanedEntries.length < 2) {
-    json(res, 400, { error: "Add at least two people and two book recommendations." });
+    json(res, 400, { error: "Add at least two people." });
+    return;
+  }
+
+  if (bookEntries.length < 2) {
+    json(res, 400, { error: "Add at least two book recommendations." });
     return;
   }
 
@@ -124,12 +131,15 @@ async function createPoll(req, res) {
   const id = randomBytes(5).toString("base64url");
   const adminKey = randomBytes(16).toString("base64url");
   const participants = cleanedEntries.map((entry) => ({ id: randomUUID(), name: entry.name }));
-  const books = cleanedEntries.map((entry, index) => ({
-    id: randomUUID(),
-    title: entry.title,
-    author: entry.author,
-    recommenderId: participants[index].id
-  }));
+  const books = cleanedEntries
+    .map((entry, index) => ({ entry, participant: participants[index] }))
+    .filter(({ entry }) => entry.title)
+    .map(({ entry, participant }) => ({
+      id: randomUUID(),
+      title: entry.title,
+      author: entry.author,
+      recommenderId: participant.id
+    }));
 
   const now = new Date();
   const poll = {
