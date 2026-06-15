@@ -1,0 +1,13 @@
+{
+  "name": "book-vote-app",
+  "version": "1.0.0",
+  "private": true,
+  "description": "A lightweight book club voting app with timed ballots and self-vote blocking.",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

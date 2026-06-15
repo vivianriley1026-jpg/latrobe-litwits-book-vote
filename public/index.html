@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Book Vote</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <a class="brand" href="/" aria-label="Book Vote home">
+          <span class="brand-mark">BV</span>
+          <span>Book Vote</span>
+        </a>
+        <div class="status-pill" id="statusPill">Ready</div>
+      </header>
+
+      <section class="workspace" id="createView">
+        <div class="panel intro-panel">
+          <p class="eyebrow">Book club ballot</p>
+          <h1>Pick the next read without the group-chat fog.</h1>
+          <form id="createForm" class="stack">
+            <label>
+              Ballot name
+              <input id="pollTitle" name="title" autocomplete="off" value="Next Book Club Pick" />
+            </label>
+
+            <fieldset>
+              <legend>Voting window</legend>
+              <div class="segmented" role="radiogroup" aria-label="Voting window">
+                <label><input type="radio" name="hours" value="24" /> <span>24h</span></label>
+                <label><input type="radio" name="hours" value="48" checked /> <span>48h</span></label>
+                <label><input type="radio" name="hours" value="72" /> <span>72h</span></label>
+                <label><input type="radio" name="hours" value="168" /> <span>1w</span></label>
+              </div>
+            </fieldset>
+
+            <div class="entry-head">
+              <h2>Recommendations</h2>
+              <button class="icon-button" type="button" id="addEntry" aria-label="Add recommendation" title="Add recommendation">+</button>
+            </div>
+
+            <div class="entries" id="entries"></div>
+
+            <button class="primary" type="submit">Create share link</button>
+            <p class="message" id="createMessage" role="status"></p>
+          </form>
+        </div>
+      </section>
+
+      <section class="workspace hidden" id="pollView">
+        <div class="poll-grid">
+          <aside class="panel ballot-panel">
+            <p class="eyebrow" id="pollState">Open ballot</p>
+            <h1 id="pollName">Book Vote</h1>
+            <div class="timer" id="timer">--</div>
+            <div class="progress-wrap">
+              <div class="progress-bar" id="progressBar"></div>
+            </div>
+            <div class="share-box">
+              <input id="shareLink" readonly />
+              <button class="secondary" id="copyShare" type="button">Copy</button>
+            </div>
+            <button class="danger hidden" id="closeNow" type="button">Close now</button>
+          </aside>
+
+          <div class="panel vote-panel">
+            <div id="voteArea"></div>
+            <p class="message" id="voteMessage" role="status"></p>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <template id="entryTemplate">
+      <div class="entry-row">
+        <label>
+          Person
+          <input class="entry-name" autocomplete="name" placeholder="Maya" />
+        </label>
+        <label>
+          Book
+          <input class="entry-title" autocomplete="off" placeholder="The Left Hand of Darkness" />
+        </label>
+        <label>
+          Author
+          <input class="entry-author" autocomplete="off" placeholder="Ursula K. Le Guin" />
+        </label>
+        <button class="icon-button remove-entry" type="button" aria-label="Remove recommendation" title="Remove recommendation">×</button>
+      </div>
+    </template>
+
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>
