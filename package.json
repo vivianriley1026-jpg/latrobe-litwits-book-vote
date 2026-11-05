@@ -5,9 +5,13 @@
   "description": "A lightweight book club voting app with timed ballots and self-vote blocking.",
   "type": "module",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node --test"
   },
   "engines": {
     "node": ">=18"
+  },
+  "devDependencies": {
+    "jsdom": "^26.1.0"
   }
 }
