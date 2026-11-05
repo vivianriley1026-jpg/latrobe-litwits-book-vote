@@ -1,60 +1,44 @@
 # Book Vote
 
-A small book-club ballot app for creating a shared voting link.
+Latrobe Litwits’ book-club nominations and voting app. Production server has no runtime dependencies.
 
-## What It Does
+## Shared nominations
 
-- Creates a ballot from a list of people and their recommended books.
-- Starts with the Latrobe Litwits ballot details pulled from the screenshots in this folder.
-- Lets the organizer choose a 24 hour, 48 hour, 72 hour, or 1 week voting window.
-- Gives the organizer an admin link and a clean share link for the group chat.
-- Prevents someone from voting for the book they recommended.
-- Lets people change their vote until the ballot closes.
-- Hides vote totals until the timer ends or the organizer closes the ballot.
+1. Open the app and leave **Let members submit through a shared link** selected.
+2. Name the round and choose its eventual voting window (5, 24, 48, 72 hours or one week).
+3. Click **Create share link**. Keep/bookmark the private organizer link; share only the **Member link**.
+4. Each member enters their name, book title and author. Members can instead join without recommending a book.
+5. Members can edit their own entry in the same browser until voting opens. Their edit key stays in browser storage and is never included in the public poll response. Names are unique within a round; people with the same first name should use their full names.
+6. When everyone has joined, use the private organizer link to **Close nominations & start voting**. At least two books are required. This locks the list and starts the full voting window at that moment—not when the round was created.
+7. Send the same member link again for voting. Members choose their names, cannot vote for their own recommendation, and can change votes until the deadline. The organizer can close voting early.
 
-## Current Preset
+This is a small trusted-club tool, not an identity-verified election system: names on the voter selector are honor-based, as in the original app. Keep the group link within the club. Clearing browser storage loses the member’s nomination-edit key; saving the organizer link is important because there is no account recovery flow.
 
-The create screen is prefilled with:
+## Manual ballots and existing rounds
 
-- Charlie: `Choke Points` by Edward Fishman
-- Jacob: `Rasputin: The Downfall of the Romanovs` by Antony Beevor
-- Perry: `Founding Brothers` by Joseph Ellis
-- Zac: `Diplomacy` by Henry Kissinger
-- Zach: `Relentless` by Tim Grover
-- Member 6: `Rubicon` by Tom Holland
-- Member 7: `The Political Thought of Xi Jinping` by Olivia Cheung & Steve Tsang
+Choose **Enter everyone’s books and start voting now** to use the original manual workflow. Include all voters, leaving the book blank for anyone not making a recommendation. Old ballots without a phase field remain readable/votable and retain their original deadlines and votes. No migration or reset is required.
 
-The screenshots showed two members only as phone numbers, so they are left as `Member 6` and `Member 7` for editing before a real ballot is created. The chat screenshot also appears to swap `Lolita` for `Rasputin: The Downfall of the Romanovs`, so the preset uses `Rasputin`.
-
-## Run Locally
-
-From this folder:
+## Run and test
 
 ```sh
-node server.js
+npm start
+# http://127.0.0.1:3000
+
+npm ci
+npm test
 ```
 
-Then open:
+Tests cover the server lifecycle, authorization, concurrent submissions, protected editing, delayed timer, self-vote blocking, restart persistence, legacy ballots, form interactions, private-link separation, text escaping and draft-preserving refresh. UI interaction tests use JSDOM, not a visual browser.
 
-```text
-http://127.0.0.1:3000
-```
+## Hosting / storage
 
-On this Mac, if `node` is not on your normal path, this bundled runtime worked during testing:
+Live service: https://latrobe-litwits-book-vote.onrender.com/
 
-```sh
-/Users/timothyleonard/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node server.js
-```
+- Start: `node server.js`
+- Runtime: Node 18 or newer
+- Host: `HOST`, defaults to localhost unless `PORT` is provided
+- Port: host-provided `PORT`
+- Store: `DATA_DIR` when supplied, otherwise `./data/polls.json`
+- Existing Render persistent disk: `/opt/render/project/src/data`. **Keep this disk mounted. Never replace the production store with the repository’s sample file.**
 
-## Make A Real Shareable Link
-
-To paste a link into iMessage, this app needs to be running on a public host. The simplest setup is a small Node host with persistent file storage, such as Render, Railway, Fly.io, or a VPS.
-
-Use these settings:
-
-- Build command: none
-- Start command: `node server.js`
-- Port: use the host-provided `PORT` environment variable
-- Persistent storage: keep the `data` folder so votes survive restarts
-
-After it is hosted, open the public URL, create a ballot, and paste the generated share link into the text thread. Keep the admin link for yourself.
+Writes are serialized within a single Node process and use atomic file replacement. This file store is intended for one server instance; do not run multiple independent writers against it. Test/preview instances should use a temporary `DATA_DIR` so they never touch real ballots.

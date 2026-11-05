@@ -1,5 +1,5 @@
 import { createServer } from "node:http";
-import { readFile, mkdir, writeFile } from "node:fs/promises";
+import { readFile, mkdir, writeFile, rename } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { extname, join, normalize } from "node:path";
 import { randomBytes, randomUUID } from "node:crypto";
@@ -8,7 +8,7 @@ const PORT = Number(process.env.PORT || 3000);
 const HOST = process.env.HOST || (process.env.PORT ? "0.0.0.0" : "127.0.0.1");
 const ROOT = process.cwd();
 const PUBLIC_DIR = join(ROOT, "public");
-const DATA_DIR = join(ROOT, "data");
+const DATA_DIR = process.env.DATA_DIR || join(ROOT, "data");
 const DATA_FILE = join(DATA_DIR, "polls.json");
 
 const contentTypes = {
@@ -27,16 +27,17 @@ async function ensureStore() {
 }
 
 async function readStore() {
-  await ensureStore();
   return JSON.parse(await readFile(DATA_FILE, "utf8"));
 }
 
 async function writeStore(store) {
-  await writeFile(DATA_FILE, JSON.stringify(store, null, 2));
+  const temporary = `${DATA_FILE}.tmp`;
+  await writeFile(temporary, JSON.stringify(store, null, 2));
+  await rename(temporary, DATA_FILE);
 }
 
 function json(res, status, body) {
-  res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
+  res.writeHead(status, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store", "Referrer-Policy": "no-referrer" });
   res.end(JSON.stringify(body));
 }
 
@@ -67,7 +68,8 @@ function cleanText(value, maxLength) {
 
 function publicPoll(poll, adminKey) {
   const now = Date.now();
-  const closed = poll.closedAt || now >= new Date(poll.closesAt).getTime();
+  const phase = poll.phase || "voting";
+  const closed = Boolean(poll.closedAt || (phase !== "nominations" && now >= new Date(poll.closesAt).getTime()));
   const votesByBook = Object.fromEntries(poll.books.map((book) => [book.id, 0]));
 
   for (const vote of Object.values(poll.votes)) {
@@ -82,12 +84,15 @@ function publicPoll(poll, adminKey) {
   return {
     id: poll.id,
     title: poll.title,
+    phase,
+    durationHours: poll.durationHours || 48,
+    votingStartedAt: poll.votingStartedAt || poll.createdAt,
     createdAt: poll.createdAt,
     closesAt: poll.closesAt,
     closed,
     closedAt: poll.closedAt || null,
-    isAdmin: adminKey && adminKey === poll.adminKey,
-    participants: poll.participants,
+    isAdmin: Boolean(adminKey && adminKey === poll.adminKey),
+    participants: poll.participants.map(({ id, name }) => ({ id, name })),
     books: poll.books,
     votes: poll.votes,
     results: closed ? { votesByBook, winners } : null,
@@ -96,12 +101,13 @@ function publicPoll(poll, adminKey) {
 }
 
 async function createPoll(req, res) {
-  const body = await readBody(req);
+  const body = req.body;
   const title = cleanText(body.title || "Book Club Ballot", 80);
   const hours = Number(body.hours);
-  const durationHours = [24, 48, 72, 168].includes(hours) ? hours : 48;
+  const durationHours = [5, 24, 48, 72, 168].includes(hours) ? hours : 48;
 
-  const entries = Array.isArray(body.entries) ? body.entries : [];
+  const nominations = body.mode === "nominations";
+  const entries = !nominations && Array.isArray(body.entries) ? body.entries : [];
   const cleanedEntries = entries
     .map((entry) => ({
       name: cleanText(entry.name, 60),
@@ -112,12 +118,12 @@ async function createPoll(req, res) {
 
   const bookEntries = cleanedEntries.filter((entry) => entry.title);
 
-  if (cleanedEntries.length < 2) {
+  if (!nominations && cleanedEntries.length < 2) {
     json(res, 400, { error: "Add at least two people." });
     return;
   }
 
-  if (bookEntries.length < 2) {
+  if (!nominations && bookEntries.length < 2) {
     json(res, 400, { error: "Add at least two book recommendations." });
     return;
   }
@@ -147,7 +153,10 @@ async function createPoll(req, res) {
     adminKey,
     title,
     createdAt: now.toISOString(),
-    closesAt: new Date(now.getTime() + durationHours * 60 * 60 * 1000).toISOString(),
+    phase: nominations ? "nominations" : "voting",
+    durationHours,
+    votingStartedAt: nominations ? null : now.toISOString(),
+    closesAt: nominations ? null : new Date(now.getTime() + durationHours * 60 * 60 * 1000).toISOString(),
     closedAt: null,
     participants,
     books,
@@ -178,7 +187,7 @@ async function getPoll(id, req, res) {
 }
 
 async function vote(id, req, res) {
-  const body = await readBody(req);
+  const body = req.body;
   const participantId = cleanText(body.participantId, 80);
   const bookId = cleanText(body.bookId, 80);
   const store = await readStore();
@@ -186,6 +195,11 @@ async function vote(id, req, res) {
 
   if (!poll) {
     json(res, 404, { error: "Ballot not found." });
+    return;
+  }
+
+  if (poll.phase === "nominations") {
+    json(res, 403, { error: "Nominations are still open. Voting has not started." });
     return;
   }
 
@@ -214,11 +228,11 @@ async function vote(id, req, res) {
   };
   await writeStore(store);
 
-  json(res, 200, { poll: publicPoll(poll) });
+  json(res, 200, { poll: publicPoll(poll, body.adminKey) });
 }
 
 async function closePoll(id, req, res) {
-  const body = await readBody(req);
+  const body = req.body;
   const adminKey = cleanText(body.adminKey, 80);
   const store = await readStore();
   const poll = store.polls[id];
@@ -233,9 +247,63 @@ async function closePoll(id, req, res) {
     return;
   }
 
+  if (poll.phase === "nominations") {
+    json(res, 400, { error: "Start voting before closing the ballot." });
+    return;
+  }
+
   if (!poll.closedAt) poll.closedAt = new Date().toISOString();
   await writeStore(store);
   json(res, 200, { poll: publicPoll(poll, adminKey) });
+}
+
+async function nominate(id, req, res) {
+  const body = req.body;
+  const store = await readStore();
+  const poll = store.polls[id];
+  if (!poll) return json(res, 404, { error: "Ballot not found." });
+  if (poll.phase !== "nominations" || poll.closedAt) {
+    return json(res, 403, { error: "Nominations have closed. The ballot is now locked." });
+  }
+  const name = cleanText(body.name, 60);
+  const title = body.voterOnly === true ? "" : cleanText(body.title, 120);
+  const author = body.voterOnly === true ? "" : cleanText(body.author, 80);
+  if (!name || (body.voterOnly !== true && (!title || !author))) {
+    return json(res, 400, { error: "Enter your name, book title and author, or choose to join without a book." });
+  }
+  let person = body.participantId ? poll.participants.find(p => p.id === body.participantId) : null;
+  if (body.participantId && (!person || !person.editKey || person.editKey !== body.editKey)) {
+    return json(res, 403, { error: "Use the same browser you submitted from to edit your recommendation." });
+  }
+  if (poll.participants.some(p => p.id !== person?.id && p.name.toLocaleLowerCase() === name.toLocaleLowerCase())) {
+    return json(res, 409, { error: "That name is already on the list. To edit, use the browser you submitted from. If you share a name, add your last name." });
+  }
+  if (!person) {
+    person = { id: randomUUID(), name, editKey: randomBytes(24).toString("base64url") };
+    poll.participants.push(person);
+  } else person.name = name;
+  const existing = poll.books.find(b => b.recommenderId === person.id);
+  poll.books = poll.books.filter(b => b.recommenderId !== person.id);
+  if (title) poll.books.push({ id: existing?.id || randomUUID(), title, author, recommenderId: person.id });
+  await writeStore(store);
+  json(res, 200, { poll: publicPoll(poll, body.adminKey), participantId: person.id, editKey: person.editKey });
+}
+
+async function startVoting(id, req, res) {
+  const store = await readStore();
+  const poll = store.polls[id];
+  if (!poll) return json(res, 404, { error: "Ballot not found." });
+  if (req.body.adminKey !== poll.adminKey) return json(res, 403, { error: "Organizer link required." });
+  if (poll.phase !== "nominations" || poll.closedAt) return json(res, 409, { error: "Voting has already started." });
+  if (poll.participants.length < 2 || poll.books.length < 2) {
+    return json(res, 400, { error: "At least two members and two book recommendations are needed before voting starts." });
+  }
+  const now = new Date();
+  poll.phase = "voting";
+  poll.votingStartedAt = now.toISOString();
+  poll.closesAt = new Date(now.getTime() + poll.durationHours * 3600000).toISOString();
+  await writeStore(store);
+  json(res, 200, { poll: publicPoll(poll, req.body.adminKey) });
 }
 
 async function serveStatic(req, res) {
@@ -249,7 +317,9 @@ async function serveStatic(req, res) {
   try {
     const file = await readFile(filePath);
     res.writeHead(200, {
-      "Content-Type": contentTypes[extname(filePath)] || "application/octet-stream"
+      "Content-Type": contentTypes[extname(filePath)] || "application/octet-stream",
+      "Cache-Control": "no-cache",
+      "Referrer-Policy": "no-referrer"
     });
     res.end(file);
   } catch {
@@ -258,26 +328,41 @@ async function serveStatic(req, res) {
   }
 }
 
+// Serialize complete read/modify/write transactions, including simultaneous nominations.
+// Atomic renames let readers see either the old or new complete store, never partial JSON.
+let mutations = Promise.resolve();
+function mutate(operation) {
+  const next = mutations.then(operation);
+  mutations = next.catch(() => {});
+  return next;
+}
 const server = createServer(async (req, res) => {
   try {
     const url = new URL(req.url, `http://${req.headers.host}`);
     const pollMatch = url.pathname.match(/^\/api\/polls\/([^/]+)$/);
-    const voteMatch = url.pathname.match(/^\/api\/polls\/([^/]+)\/vote$/);
-    const closeMatch = url.pathname.match(/^\/api\/polls\/([^/]+)\/close$/);
-
-    if (req.method === "POST" && url.pathname === "/api/polls") return createPoll(req, res);
-    if (req.method === "GET" && pollMatch) return getPoll(pollMatch[1], req, res);
-    if (req.method === "POST" && voteMatch) return vote(voteMatch[1], req, res);
-    if (req.method === "POST" && closeMatch) return closePoll(closeMatch[1], req, res);
-
-    if (req.method === "GET") return serveStatic(req, res);
+    const actionMatch = url.pathname.match(/^\/api\/polls\/([^/]+)\/(vote|close|nominate|start)$/);
+    if (req.method === "POST") {
+      try { req.body = await readBody(req); }
+      catch { return json(res, 400, { error: "Invalid request body." }); }
+      if (!req.body || typeof req.body !== "object" || Array.isArray(req.body)) {
+        return json(res, 400, { error: "Invalid request body." });
+      }
+      if (url.pathname === "/api/polls") return await mutate(() => createPoll(req, res));
+      if (actionMatch) {
+        const handlers = { vote, close: closePoll, nominate, start: startVoting };
+        return await mutate(() => handlers[actionMatch[2]](actionMatch[1], req, res));
+      }
+    }
+    if (req.method === "GET" && pollMatch) return await getPoll(pollMatch[1], req, res);
+    if (req.method === "GET") return await serveStatic(req, res);
     json(res, 405, { error: "Method not allowed." });
   } catch (error) {
-    json(res, 500, { error: error.message || "Something went wrong." });
+    console.error(error);
+    if (!res.headersSent) json(res, 500, { error: "Could not save this change. Please try again." });
   }
 });
 
 await ensureStore();
 server.listen(PORT, HOST, () => {
-  console.log(`Book Vote is running at http://${HOST}:${PORT}`);
+  console.log(`Book Vote is running at http://${HOST}:${server.address().port}`);
 });
