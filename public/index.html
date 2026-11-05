@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Book Vote</title>
+    <title>Latrobe Litwits · Book Vote</title>
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
@@ -26,9 +26,18 @@
               <input id="pollTitle" name="title" autocomplete="off" value="Next Book Club Pick" />
             </label>
 
+            <label>
+              How do you want to collect books?
+              <select id="collectionMode" name="mode">
+                <option value="nominations">Let members submit through a shared link</option>
+                <option value="manual">Enter everyone’s books and start voting now</option>
+              </select>
+            </label>
+            <p class="help" id="collectionHelp">Send one link to the club. Members add their own recommendations, then you open voting when everyone is ready.</p>
             <fieldset>
-              <legend>Voting window</legend>
+              <legend>Voting window (starts when voting opens)</legend>
               <div class="segmented" role="radiogroup" aria-label="Voting window">
+                <label><input type="radio" name="hours" value="5" /> <span>5h</span></label>
                 <label><input type="radio" name="hours" value="24" /> <span>24h</span></label>
                 <label><input type="radio" name="hours" value="48" checked /> <span>48h</span></label>
                 <label><input type="radio" name="hours" value="72" /> <span>72h</span></label>
@@ -36,12 +45,14 @@
               </div>
             </fieldset>
 
+            <div id="manualEntries" class="hidden">
             <div class="entry-head">
-              <h2>Recommendations</h2>
-              <button class="icon-button" type="button" id="addEntry" aria-label="Add recommendation" title="Add recommendation">+</button>
+              <h2>People and books</h2>
+              <button class="icon-button" type="button" id="addEntry" aria-label="Add person" title="Add person">+</button>
             </div>
 
             <div class="entries" id="entries"></div>
+            </div>
 
             <button class="primary" type="submit">Create share link</button>
             <p class="message" id="createMessage" role="status"></p>
@@ -58,11 +69,23 @@
             <div class="progress-wrap">
               <div class="progress-bar" id="progressBar"></div>
             </div>
+            <p class="help">Member link — share this with the club for nominations and voting.</p>
             <div class="share-box">
-              <input id="shareLink" readonly />
+              <input id="shareLink" aria-label="Member link — share this with the club" readonly />
               <button class="secondary" id="copyShare" type="button">Copy</button>
             </div>
-            <button class="danger hidden" id="closeNow" type="button">Close now</button>
+            <div id="organizerControls" class="hidden organizer-controls">
+              <p class="eyebrow">Organizer controls</p>
+              <button class="primary hidden" id="startVoting" type="button">Close nominations &amp; start voting</button>
+              <p class="help" id="startHelp"></p>
+              <details>
+                <summary>Your private organizer link</summary>
+                <p class="help">Bookmark this link. Keep it private — it controls this round.</p>
+                <input id="organizerLink" aria-label="Private organizer link" readonly />
+                <button class="secondary" id="copyOrganizer" type="button">Copy private link</button>
+              </details>
+            </div>
+            <button class="danger hidden" id="closeNow" type="button">Close voting now</button>
           </aside>
 
           <div class="panel vote-panel">
@@ -81,7 +104,7 @@
         </label>
         <label>
           Book
-          <input class="entry-title" autocomplete="off" placeholder="The Left Hand of Darkness" />
+          <input class="entry-title" autocomplete="off" placeholder="Optional" />
         </label>
         <label>
           Author

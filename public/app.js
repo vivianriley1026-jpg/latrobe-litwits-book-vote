@@ -18,15 +18,6 @@ const voteMessage = document.querySelector("#voteMessage");
 let activePoll = null;
 let timerHandle = null;
 
-const latrobePreset = [
-  { name: "Charlie", title: "Choke Points", author: "Edward Fishman" },
-  { name: "Jacob", title: "Rasputin: The Downfall of the Romanovs", author: "Antony Beevor" },
-  { name: "Perry", title: "Founding Brothers", author: "Joseph Ellis" },
-  { name: "Zac", title: "Diplomacy", author: "Henry Kissinger" },
-  { name: "Zach", title: "Relentless", author: "Tim Grover" },
-  { name: "Member 6", title: "Rubicon", author: "Tom Holland" },
-  { name: "Member 7", title: "The Political Thought of Xi Jinping", author: "Olivia Cheung & Steve Tsang" }
-];
 
 function setStatus(text) {
   statusPill.textContent = text;
@@ -45,7 +36,8 @@ function addEntry(values = {}) {
 
 function seedEntries() {
   document.querySelector("#pollTitle").value = "Latrobe Litwits: Next Read";
-  latrobePreset.forEach(addEntry);
+  addEntry();
+  addEntry();
 }
 
 function collectEntries() {
@@ -103,7 +95,12 @@ function formatRemaining(ms) {
 function updateTimer() {
   if (!activePoll) return;
 
-  const created = new Date(activePoll.createdAt).getTime();
+  if (activePoll.phase === "nominations") {
+    timer.textContent = "Nominations open";
+    progressBar.style.width = "0%";
+    return;
+  }
+  const created = new Date(activePoll.votingStartedAt || activePoll.createdAt).getTime();
   const closes = new Date(activePoll.closesAt).getTime();
   const now = Date.now();
   const remaining = closes - now;
@@ -126,6 +123,7 @@ function rememberParticipant(id) {
 }
 
 function renderVoteArea() {
+  if (activePoll.phase === "nominations") return renderNominationArea();
   const chosenParticipantId = selectedParticipantId();
   const chosenVote = activePoll.votes[chosenParticipantId]?.bookId;
 
@@ -220,7 +218,7 @@ async function submitVote(bookId) {
     const participantId = selectedParticipantId();
     const { poll } = await api(`/api/polls/${activePoll.id}/vote`, {
       method: "POST",
-      body: JSON.stringify({ participantId, bookId })
+      body: JSON.stringify({ participantId, bookId, adminKey: adminKey() })
     });
     activePoll = poll;
     renderPoll();
@@ -235,15 +233,19 @@ async function submitVote(bookId) {
 function renderPoll() {
   createView.classList.add("hidden");
   pollView.classList.remove("hidden");
-  setStatus(activePoll.closed ? "Closed" : "Open");
-  pollState.textContent = activePoll.closed ? "Final results" : "Open ballot";
+  const nominating = activePoll.phase === "nominations";
+  setStatus(nominating ? "Nominations" : activePoll.closed ? "Closed" : "Voting");
+  pollState.textContent = nominating ? "Collecting the next shortlist" : activePoll.closed ? "Final results" : "Open ballot";
   pollName.textContent = activePoll.title;
   shareLink.value = absoluteUrl(`/poll/${activePoll.id}`);
-  closeNow.classList.toggle("hidden", !activePoll.isAdmin || activePoll.closed);
+  closeNow.classList.toggle("hidden", !activePoll.isAdmin || activePoll.closed || nominating);
+  document.querySelector("#organizerControls").classList.toggle("hidden", !activePoll.isAdmin);
+  document.querySelector("#organizerLink").value = activePoll.isAdmin ? window.location.href : "";
+  updateOrganizer();
   renderVoteArea();
   updateTimer();
   clearInterval(timerHandle);
-  timerHandle = setInterval(updateTimer, 15000);
+  timerHandle = setInterval(refreshPoll, 15000);
 }
 
 async function loadPoll() {
@@ -284,6 +286,7 @@ createForm.addEventListener("submit", async (event) => {
     const payload = {
       title: document.querySelector("#pollTitle").value,
       hours: Number(new FormData(createForm).get("hours")),
+      mode: document.querySelector("#collectionMode").value,
       entries: collectEntries()
     };
     const result = await api("/api/polls", {
@@ -299,22 +302,163 @@ createForm.addEventListener("submit", async (event) => {
   }
 });
 
-copyShare.addEventListener("click", async () => {
-  await navigator.clipboard.writeText(shareLink.value);
-  copyShare.textContent = "Copied";
-  setTimeout(() => {
-    copyShare.textContent = "Copy";
-  }, 1200);
-});
+function message(text, success = false) {
+  voteMessage.style.color = success ? "#167a61" : "#c84d39";
+  voteMessage.textContent = text;
+}
 
-closeNow.addEventListener("click", async () => {
-  const { poll } = await api(`/api/polls/${activePoll.id}/close`, {
-    method: "POST",
-    body: JSON.stringify({ adminKey: adminKey() })
+function updateOrganizer() {
+  const nominating = activePoll.phase === "nominations";
+  const button = document.querySelector("#startVoting");
+  button.classList.toggle("hidden", !nominating);
+  button.disabled = activePoll.books.length < 2;
+  document.querySelector("#startHelp").textContent = nominating
+    ? `Wait for everyone to join, including members who only want to vote. At least two books are required. The ${activePoll.durationHours}-hour voting window starts when you open voting.` : "";
+}
+
+function nominationCredential() {
+  try { return JSON.parse(localStorage.getItem(`bookvote:${activePoll.id}:nomination`) || "null"); }
+  catch { return null; }
+}
+
+function renderNominationList() {
+  const list = document.querySelector("#nominationList");
+  if (!list) return;
+  document.querySelector("#nominationCount").textContent = `${activePoll.books.length} books · ${activePoll.participants.length} members joined`;
+  list.innerHTML = activePoll.books.map(book => `
+    <article class="book-card"><div>
+      <p class="book-title">${escapeHtml(book.title)}</p>
+      <p class="book-meta">${escapeHtml(bookMeta(book))}</p>
+    </div></article>`).join("") || '<p class="help empty-list">The shortlist starts here. Add the first recommendation above.</p>';
+  const voters = activePoll.participants.filter(p => !activePoll.books.some(b => b.recommenderId === p.id));
+  document.querySelector("#votersOnly").textContent = voters.length ? `Joining just to vote: ${voters.map(p => p.name).join(", ")}` : "";
+}
+
+function renderNominationArea() {
+  const credential = nominationCredential();
+  const person = activePoll.participants.find(p => p.id === credential?.participantId);
+  const book = activePoll.books.find(b => b.recommenderId === person?.id);
+  const voterOnly = Boolean(person && !book);
+  voteArea.innerHTML = `
+    <p class="eyebrow">Everyone gets a pick</p>
+    <h2>${person ? "Your recommendation" : "What should we read next?"}</h2>
+    <p class="help">One recommendation per member. No account needed. You can edit your entry in this browser until the organizer starts voting.</p>
+    <form id="nominationForm" class="stack">
+      <label>Your name<input id="nomineeName" name="name" required maxlength="60" autocomplete="name" value="${escapeHtml(person?.name || "")}" placeholder="First and last name" /></label>
+      <label class="check-label"><input id="voterOnly" type="checkbox" ${voterOnly ? "checked" : ""} /> I’ll join the vote without recommending a book</label>
+      <div id="bookFields" class="nomination-fields ${voterOnly ? "hidden" : ""}">
+        <label>Book title<input name="title" id="nomineeTitle" maxlength="120" ${voterOnly ? "" : "required"} value="${escapeHtml(book?.title || "")}" placeholder="The book you want the club to read" /></label>
+        <label>Author<input name="author" id="nomineeAuthor" maxlength="80" ${voterOnly ? "" : "required"} value="${escapeHtml(book?.author || "")}" placeholder="Author’s name" /></label>
+      </div>
+      <button class="primary" type="submit">${person ? "Save changes" : "Submit my recommendation"}</button>
+    </form>
+    <section class="shortlist" aria-label="Current nominations">
+      <p class="eyebrow">The growing shortlist</p>
+      <h2 id="nominationCount"></h2>
+      <div id="nominationList" class="book-list"></div>
+      <p id="votersOnly" class="help"></p>
+      <p class="help">This list refreshes automatically. Return to this same link to vote.</p>
+    </section>`;
+  const only = document.querySelector("#voterOnly");
+  function toggleBookFields() {
+    document.querySelector("#bookFields").classList.toggle("hidden", only.checked);
+    for (const id of ["#nomineeTitle", "#nomineeAuthor"]) document.querySelector(id).required = !only.checked;
+    document.querySelector('#nominationForm button[type="submit"]').textContent = person ? "Save changes" : only.checked ? "Join the vote" : "Submit my recommendation";
+  }
+  only.addEventListener("change", toggleBookFields);
+  toggleBookFields();
+  document.querySelector("#nominationForm").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const button = event.target.querySelector('button[type="submit"]');
+    button.disabled = true;
+    message("");
+    try {
+      // Check that an edit key can be kept before creating the entry.
+      localStorage.setItem("bookvote:storage-check", "ok");
+      localStorage.removeItem("bookvote:storage-check");
+      const result = await api(`/api/polls/${activePoll.id}/nominate`, {
+        method: "POST",
+        body: JSON.stringify({
+          name: document.querySelector("#nomineeName").value,
+          title: document.querySelector("#nomineeTitle").value,
+          author: document.querySelector("#nomineeAuthor").value,
+          voterOnly: only.checked,
+          participantId: person ? credential.participantId : undefined,
+          editKey: person ? credential.editKey : undefined,
+          adminKey: adminKey()
+        })
+      });
+      localStorage.setItem(`bookvote:${activePoll.id}:nomination`, JSON.stringify({ participantId: result.participantId, editKey: result.editKey }));
+      rememberParticipant(result.participantId);
+      activePoll = result.poll;
+      renderPoll();
+      message("Saved — you’re on the list. You can make changes here until voting opens.", true);
+    } catch (error) { message(error.message); }
+    finally { button.disabled = false; }
   });
-  activePoll = poll;
-  renderPoll();
-});
+  renderNominationList();
+}
 
+let refreshing = false;
+async function refreshPoll() {
+  updateTimer();
+  if (refreshing || !activePoll) return;
+  refreshing = true;
+  try {
+    const params = adminKey() ? `?admin=${encodeURIComponent(adminKey())}` : "";
+    const { poll } = await api(`/api/polls/${activePoll.id}${params}`);
+    const changedPhase = poll.phase !== activePoll.phase || poll.closed !== activePoll.closed;
+    activePoll = poll;
+    if (changedPhase) {
+      renderPoll();
+      message(poll.closed ? "Voting has closed. Results are below." : "Voting is now open. Choose your name and cast your vote.", true);
+    } else if (poll.phase === "nominations") {
+      // Do not replace the form or erase an in-progress recommendation.
+      renderNominationList();
+      updateOrganizer();
+    }
+  } catch { /* Keep the member's form intact through a brief connection failure. */ }
+  finally { refreshing = false; }
+}
+
+async function copyLink(input, button, normalText) {
+  try {
+    await navigator.clipboard.writeText(input.value);
+    button.textContent = "Copied";
+    setTimeout(() => { button.textContent = normalText; }, 1400);
+  } catch {
+    input.focus(); input.select();
+    message("Select and copy the highlighted link manually.");
+  }
+}
+copyShare.addEventListener("click", () => copyLink(shareLink, copyShare, "Copy"));
+document.querySelector("#copyOrganizer").addEventListener("click", (event) => copyLink(document.querySelector("#organizerLink"), event.target, "Copy private link"));
+
+async function organizerAction(action, prompt) {
+  if (!window.confirm(prompt)) return;
+  try {
+    const { poll } = await api(`/api/polls/${activePoll.id}/${action}`, {
+      method: "POST", body: JSON.stringify({ adminKey: adminKey() })
+    });
+    activePoll = poll;
+    renderPoll();
+    message(action === "start" ? "Voting is open. Share the same member link with the club." : "Voting is closed. Results are ready.", true);
+  } catch (error) { message(error.message); }
+}
+document.querySelector("#startVoting").addEventListener("click", () => organizerAction("start", `Everyone ready? This locks the member list and recommendations, and starts ${activePoll.durationHours} hours of voting.`));
+closeNow.addEventListener("click", () => organizerAction("close", "Close voting now and reveal the results? This cannot be undone."));
+
+document.querySelector("#collectionMode").addEventListener("change", (event) => {
+  const manual = event.target.value === "manual";
+  document.querySelector("#manualEntries").classList.toggle("hidden", !manual);
+  document.querySelector("#collectionHelp").textContent = manual
+    ? "Add every voter. Leave the book blank for anyone who wants to vote without a recommendation. Voting starts as soon as you create the link."
+    : "Send one link to the club. Members add their own recommendations, then you open voting when everyone is ready.";
+});
+window.addEventListener("popstate", () => {
+  clearInterval(timerHandle);
+  if (pollIdFromPath()) loadPoll();
+  else { activePoll = null; pollView.classList.add("hidden"); createView.classList.remove("hidden"); setStatus("Ready"); }
+});
 seedEntries();
 loadPoll();
