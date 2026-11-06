@@ -99,3 +99,37 @@ test('member link hides organizer controls and shows actionable errors', async (
     assert.ok(!q('#nominationForm button').disabled);
   } finally { window.close(); }
 });
+
+test('organizer sees runoff and draw controls, members see history and the recorded winner', async () => {
+  const dom=new JSDOM(html,{url:'https://bookvote.test/poll/tie?admin=organizer',runScripts:'outside-only'});
+  const {window}=dom;const q=s=>window.document.querySelector(s);
+  let poll={id:'tie',title:'Tie round',phase:'voting',roundNumber:1,allowSelfVote:false,durationHours:24,closed:true,isAdmin:true,createdAt:new Date().toISOString(),closesAt:new Date().toISOString(),participants:[{id:'a',name:'A'},{id:'b',name:'B'}],books:[{id:'alpha',title:'Alpha',author:'Author A',recommenderId:'a'},{id:'beta',title:'Beta',author:'Author B',recommenderId:'b'}],votes:{a:{bookId:'beta'},b:{bookId:'alpha'}},voteCount:2,results:{votesByBook:{alpha:1,beta:1},winners:['alpha','beta']}};
+  window.confirm=()=>true;
+  window.fetch=async(path,options)=>{
+    if(path.endsWith('/runoff')) {
+      poll.roundHistory=[{roundNumber:1,books:structuredClone(poll.books),voteCount:2,results:structuredClone(poll.results)}];
+      poll.roundNumber=2;poll.allowSelfVote=true;poll.closed=false;poll.durationHours=5;poll.votes={};poll.voteCount=0;poll.results=null;poll.closesAt=new Date(Date.now()+5*3600000).toISOString();
+    }
+    if(path.endsWith('/close')) {poll.closed=true;poll.voteCount=2;poll.results={votesByBook:{alpha:1,beta:1},winners:['alpha','beta']};}
+    if(path.endsWith('/draw')) poll.randomDraw={candidateIds:['alpha','beta'],winnerId:'beta',drawnAt:new Date().toISOString()};
+    return {ok:true,json:async()=>structuredClone({poll})};
+  };
+  try {
+    window.localStorage.setItem('bookvote:tie:participant','a');
+    window.eval(script);await flush();
+    assert.match(q('.result-notice').textContent,/2-way tie/);assert.ok(q('#startRunoff'));assert.equal(q('#drawWinner'),null);
+    q('#startRunoff').click();await flush();
+    assert.equal(window.location.pathname,'/poll/tie');
+    assert.equal(q('#pollState').textContent,'Tiebreaker · Round 2');
+    assert.ok(!q('[data-book-id="alpha"]').disabled);
+    assert.match(q('.runoff-note').textContent,/including their own recommendation/);
+    q('#closeNow').click();await flush();
+    assert.equal(q('#startRunoff'),null);assert.ok(q('#drawWinner'));assert.match(q('.round-history').textContent,/First-round results/);
+    q('#drawWinner').click();await flush();
+    assert.equal(q('#drawWinner'),null);assert.match(q('.result-notice').textContent,/Tiebreaker resolved/);assert.equal(q('.winner .book-title').textContent,'Beta');
+    assert.match(q('.result-notice').textContent,/vote totals below are unchanged/);
+    poll.isAdmin=false;poll.randomDraw=null;
+    await window.refreshPoll();
+    assert.equal(q('#drawWinner'),null);assert.match(q('.result-notice').textContent,/organizer/);
+  } finally {window.close();}
+});

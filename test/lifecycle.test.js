@@ -121,3 +121,57 @@ test('shared nominations, permissions, concurrency, clock, voting, persistence a
     assert.equal((await request('/api/polls/legacy')).poll.title,'Existing round');
   } finally { await stop(server.child); await rm(dataDir,{recursive:true,force:true}); }
 });
+
+test('runoff keeps the same link and history; second tie resolves once without rerolls', async () => {
+  const dataDir=await mkdtemp(join(tmpdir(),'bookvote-runoff-'));
+  let server=await start(dataDir);let url=server.url;
+  async function request(path, body, expected=200) {
+    const r=await fetch(url+path,body===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const data=await r.json();assert.equal(r.status,expected,JSON.stringify(data));return data;
+  }
+  try {
+    const initial=await request('/api/polls',{hours:24,entries:[{name:'A',title:'Alpha'},{name:'B',title:'Beta'},{name:'C',title:'Gamma'},{name:'D'}]},201);
+    const base=`/api/polls/${initial.poll.id}`;const adminKey=new URL(initial.adminPath,url).searchParams.get('admin');
+    const [a,b,c,d]=initial.poll.participants;const [alpha,beta]=initial.poll.books;
+    await request(base+'/runoff',{adminKey},409);
+    for (const [person,book] of [[a,beta],[b,alpha],[c,alpha],[d,beta]]) await request(base+'/vote',{participantId:person.id,bookId:book.id});
+    await request(base+'/close',{adminKey});
+    await request(base+'/draw',{adminKey},409);
+    await request(base+'/runoff',{adminKey:'bad'},403);
+    const runs=await Promise.all([1,2].map(()=>fetch(url+base+'/runoff',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({adminKey})})));
+    assert.deepEqual(runs.map(r=>r.status).sort(),[200,409]);
+    let poll=(await request(base)).poll;
+    assert.equal(poll.id,initial.poll.id);assert.equal(poll.roundNumber,2);assert.equal(poll.allowSelfVote,true);
+    assert.equal(poll.books.length,2);assert.equal(poll.participants.length,4);assert.equal(poll.voteCount,0);
+    assert.equal(poll.durationHours,5);assert.equal(Date.parse(poll.closesAt)-Date.parse(poll.votingStartedAt),5*3600000);
+    assert.equal(poll.roundHistory[0].books.length,3);assert.equal(poll.roundHistory[0].voteCount,4);
+    assert.equal(poll.roundHistory[0].results.votesByBook[alpha.id],2);
+    assert.equal(poll.roundHistory[0].votes,undefined); // Summary is public; original individual votes remain stored.
+    await request(base+'/draw',{adminKey},409);
+    await request(base+'/nominate',{name:'Late',title:'No',author:'No'},403);
+    await request(base+'/vote',{participantId:a.id,bookId:alpha.id}); // Own finalist now allowed.
+    await request(base+'/vote',{participantId:b.id,bookId:beta.id});
+    await request(base+'/close',{adminKey});
+    await request(base+'/runoff',{adminKey},409);
+    await request(base+'/draw',{adminKey:'bad'},403);
+    const draws=await Promise.all([request(base+'/draw',{adminKey}),request(base+'/draw',{adminKey})]);
+    assert.deepEqual(draws[0].poll.randomDraw,draws[1].poll.randomDraw);
+    const draw=draws[0].poll.randomDraw;
+    assert.ok([alpha.id,beta.id].includes(draw.winnerId));assert.deepEqual(draw.candidateIds,[alpha.id,beta.id]);
+    assert.equal(draws[0].poll.results.votesByBook[alpha.id],1);assert.equal(draws[0].poll.results.votesByBook[beta.id],1);
+    const store=JSON.parse(await readFile(join(dataDir,'polls.json'),'utf8'));
+    assert.equal(Object.keys(store.polls[initial.poll.id].roundHistory[0].votes).length,4);
+    await stop(server.child);server=await start(dataDir);url=server.url;
+    assert.deepEqual((await request(base)).poll.randomDraw,draw);
+    assert.deepEqual((await request(base+'/draw',{adminKey})).poll.randomDraw,draw);
+    const zero=await request('/api/polls',{entries:[{name:'A',title:'A'},{name:'B',title:'B'}]},201);
+    const key=new URL(zero.adminPath,url).searchParams.get('admin');
+    await request(`/api/polls/${zero.poll.id}/close`,{adminKey:key});
+    await request(`/api/polls/${zero.poll.id}/runoff`,{adminKey:key},409);
+    const single=await request('/api/polls',{entries:[{name:'A',title:'A'},{name:'B',title:'B'}]},201);
+    const singleKey=new URL(single.adminPath,url).searchParams.get('admin');const singleBase=`/api/polls/${single.poll.id}`;
+    await request(singleBase+'/vote',{participantId:single.poll.participants[0].id,bookId:single.poll.books[1].id});
+    await request(singleBase+'/close',{adminKey:singleKey});
+    await request(singleBase+'/runoff',{adminKey:singleKey},409);
+  } finally { await stop(server.child);await rm(dataDir,{recursive:true,force:true}); }
+});
