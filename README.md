@@ -14,6 +14,14 @@ Latrobe Litwits’ book-club nominations and voting app. Production server has n
 
 This is a small trusted-club tool, not an identity-verified election system: names on the voter selector are honor-based, as in the original app. Keep the group link within the club. Clearing browser storage loses the member’s nomination-edit key; saving the organizer link is important because there is no account recovery flow.
 
+## Tiebreakers
+
+- A closed first-round tie gives the organizer a **Start tiebreaker · 5 hours** button.
+- The runoff uses the **same member link**, keeps every voter, includes only the tied books and starts with fresh votes. Everyone may vote for any finalist, including their own recommendation.
+- Original results stay visible in a first-round history panel; original individual votes are preserved in storage.
+- If the completed runoff also ties, the organizer can choose **Draw a winner**. A cryptographically random equal-chance selection is recorded with its timestamp and eligible finalists. Repeated requests return that same result; there is no redraw button.
+- An empty ballot (no votes) does not trigger a tiebreaker. A clear winner does not need one. These actions require the private organizer link.
+
 ## Manual ballots and existing rounds
 
 Choose **Enter everyone’s books and start voting now** to use the original manual workflow. Include all voters, leaving the book blank for anyone not making a recommendation. Old ballots without a phase field remain readable/votable and retain their original deadlines and votes. No migration or reset is required.
@@ -28,7 +36,7 @@ npm ci
 npm test
 ```
 
-Tests cover the server lifecycle, authorization, concurrent submissions, protected editing, delayed timer, self-vote blocking, restart persistence, legacy ballots, form interactions, private-link separation, text escaping and draft-preserving refresh. UI interaction tests use JSDOM, not a visual browser.
+Tests cover the server lifecycle, authorization, concurrent submissions, protected editing, delayed timer, self-vote blocking, restart persistence, legacy ballots, form interactions, private-link separation, text escaping, draft-preserving refresh, same-link runoff history and a persistent non-repeatable random draw. UI interaction tests use JSDOM, not a visual browser.
 
 ## Hosting / storage
 

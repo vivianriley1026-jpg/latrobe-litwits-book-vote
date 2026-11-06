@@ -2,7 +2,7 @@ import { createServer } from "node:http";
 import { readFile, mkdir, writeFile, rename } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { extname, join, normalize } from "node:path";
-import { randomBytes, randomUUID } from "node:crypto";
+import { randomBytes, randomUUID, randomInt } from "node:crypto";
 
 const PORT = Number(process.env.PORT || 3000);
 const HOST = process.env.HOST || (process.env.PORT ? "0.0.0.0" : "127.0.0.1");
@@ -85,6 +85,10 @@ function publicPoll(poll, adminKey) {
     id: poll.id,
     title: poll.title,
     phase,
+    roundNumber: poll.roundNumber || 1,
+    allowSelfVote: Boolean(poll.allowSelfVote),
+    randomDraw: poll.randomDraw || null,
+    roundHistory: (poll.roundHistory || []).map(({ votes, ...summary }) => summary),
     durationHours: poll.durationHours || 48,
     votingStartedAt: poll.votingStartedAt || poll.createdAt,
     createdAt: poll.createdAt,
@@ -216,7 +220,7 @@ async function vote(id, req, res) {
     return;
   }
 
-  if (book.recommenderId === participant.id) {
+  if (!poll.allowSelfVote && book.recommenderId === participant.id) {
     json(res, 403, { error: "You cannot vote for the book you recommended." });
     return;
   }
@@ -306,6 +310,56 @@ async function startVoting(id, req, res) {
   json(res, 200, { poll: publicPoll(poll, req.body.adminKey) });
 }
 
+async function startRunoff(id, req, res) {
+  const store = await readStore();
+  const poll = store.polls[id];
+  if (!poll) return json(res, 404, { error: "Ballot not found." });
+  if (req.body.adminKey !== poll.adminKey) return json(res, 403, { error: "Organizer link required." });
+  const result = publicPoll(poll);
+  if (!result.closed || result.results.winners.length < 2 || (poll.roundNumber || 1) !== 1) {
+    return json(res, 409, { error: "A runoff is available only after the first vote closes with a tie." });
+  }
+  // Keep the original books, counts and individual votes. The member URL and roster stay the same.
+  poll.roundHistory = [{
+    roundNumber: 1, books: structuredClone(poll.books), participants: structuredClone(result.participants),
+    votes: structuredClone(poll.votes), results: result.results, voteCount: result.voteCount,
+    votingStartedAt: poll.votingStartedAt || poll.createdAt, closesAt: poll.closesAt,
+    closedAt: poll.closedAt || poll.closesAt
+  }];
+  const finalists = new Set(result.results.winners);
+  poll.books = poll.books.filter(book => finalists.has(book.id));
+  poll.votes = {};
+  poll.roundNumber = 2;
+  poll.allowSelfVote = true;
+  poll.durationHours = 5;
+  poll.phase = "voting";
+  poll.closedAt = null;
+  poll.votingStartedAt = new Date().toISOString();
+  poll.closesAt = new Date(Date.parse(poll.votingStartedAt) + 5 * 3600000).toISOString();
+  await writeStore(store);
+  json(res, 200, { poll: publicPoll(poll, req.body.adminKey) });
+}
+
+async function drawWinner(id, req, res) {
+  const store = await readStore();
+  const poll = store.polls[id];
+  if (!poll) return json(res, 404, { error: "Ballot not found." });
+  if (req.body.adminKey !== poll.adminKey) return json(res, 403, { error: "Organizer link required." });
+  // Retried requests return the saved outcome rather than drawing a second time.
+  if (poll.randomDraw) return json(res, 200, { poll: publicPoll(poll, req.body.adminKey) });
+  const result = publicPoll(poll);
+  if (!result.closed || poll.roundNumber !== 2 || result.results.winners.length < 2) {
+    return json(res, 409, { error: "A random draw is available only if the completed runoff is still tied." });
+  }
+  const candidates = result.results.winners;
+  poll.randomDraw = {
+    candidateIds: [...candidates], winnerId: candidates[randomInt(candidates.length)],
+    drawnAt: new Date().toISOString(), method: "Equal-chance random draw among tied runoff winners"
+  };
+  await writeStore(store);
+  json(res, 200, { poll: publicPoll(poll, req.body.adminKey) });
+}
+
 async function serveStatic(req, res) {
   const url = new URL(req.url, `http://${req.headers.host}`);
   const requested = url.pathname === "/" || url.pathname.startsWith("/poll/")
@@ -340,7 +394,7 @@ const server = createServer(async (req, res) => {
   try {
     const url = new URL(req.url, `http://${req.headers.host}`);
     const pollMatch = url.pathname.match(/^\/api\/polls\/([^/]+)$/);
-    const actionMatch = url.pathname.match(/^\/api\/polls\/([^/]+)\/(vote|close|nominate|start)$/);
+    const actionMatch = url.pathname.match(/^\/api\/polls\/([^/]+)\/(vote|close|nominate|start|runoff|draw)$/);
     if (req.method === "POST") {
       try { req.body = await readBody(req); }
       catch { return json(res, 400, { error: "Invalid request body." }); }
@@ -349,7 +403,7 @@ const server = createServer(async (req, res) => {
       }
       if (url.pathname === "/api/polls") return await mutate(() => createPoll(req, res));
       if (actionMatch) {
-        const handlers = { vote, close: closePoll, nominate, start: startVoting };
+        const handlers = { vote, close: closePoll, nominate, start: startVoting, runoff: startRunoff, draw: drawWinner };
         return await mutate(() => handlers[actionMatch[2]](actionMatch[1], req, res));
       }
     }
