@@ -139,7 +139,7 @@ function renderVoteArea() {
   voteArea.innerHTML = `
     <div class="vote-header">
       <div>
-        <p class="eyebrow">Cast your vote</p>
+        <p class="eyebrow">${activePoll.roundNumber === 2 ? "Tiebreaker · Round 2" : "Cast your vote"}</p>
         <h2>${activePoll.voteCount} of ${activePoll.participants.length} voted</h2>
       </div>
       <label class="select-wrap">
@@ -150,9 +150,10 @@ function renderVoteArea() {
         </select>
       </label>
     </div>
+    ${activePoll.allowSelfVote ? '<p class="help runoff-note">In this runoff, everyone may vote for any finalist—including their own recommendation.</p>' : ""}
     <div class="book-list">
       ${activePoll.books.map((book) => {
-        const ownBook = book.recommenderId === chosenParticipantId;
+        const ownBook = !activePoll.allowSelfVote && book.recommenderId === chosenParticipantId;
         const selected = chosenVote === book.id;
         return `
           <article class="book-card ${ownBook ? "disabled" : ""}">
@@ -167,6 +168,7 @@ function renderVoteArea() {
         `;
       }).join("")}
     </div>
+    ${roundHistory()}
   `;
 
   voteArea.querySelector("#participantSelect").addEventListener("change", (event) => {
@@ -182,7 +184,7 @@ function renderVoteArea() {
 
 function renderResults() {
   const votesByBook = activePoll.results?.votesByBook || {};
-  const winners = new Set(activePoll.results?.winners || []);
+  const winners = new Set(activePoll.randomDraw ? [activePoll.randomDraw.winnerId] : activePoll.results?.winners || []);
   const maxVotes = Math.max(1, ...Object.values(votesByBook));
 
   pollState.textContent = "Final results";
@@ -193,6 +195,7 @@ function renderResults() {
         <h2>${activePoll.voteCount} of ${activePoll.participants.length} voted</h2>
       </div>
     </div>
+    ${tieStatus()}
     <div class="results-list">
       ${activePoll.books.map((book) => {
         const count = votesByBook[book.id] || 0;
@@ -209,7 +212,34 @@ function renderResults() {
         `;
       }).join("")}
     </div>
+    ${roundHistory()}
   `;
+  document.querySelector("#startRunoff")?.addEventListener("click", () => organizerAction("runoff", "Start a 5-hour runoff with only the tied books? Everyone can vote again, including for their own finalist. The same member link will work."));
+  document.querySelector("#drawWinner")?.addEventListener("click", () => organizerAction("draw", "Randomly select one of the tied runoff winners? Each has an equal chance. The result will be recorded and cannot be redrawn."));
+}
+
+function tieStatus() {
+  const tied = activePoll.results?.winners || [];
+  if (activePoll.randomDraw) {
+    const draw = activePoll.randomDraw;
+    const winner = activePoll.books.find(b => b.id === draw.winnerId);
+    return `<div class="result-notice"><p class="eyebrow">Tiebreaker resolved</p><h2>${escapeHtml(winner?.title || "Winner selected")}</h2><p class="help">Selected by an equal-chance random draw from ${draw.candidateIds.length} tied finalists on ${escapeHtml(new Date(draw.drawnAt).toLocaleString())}. The vote totals below are unchanged.</p></div>`;
+  }
+  if (!tied.length) return '<p class="help runoff-note">No votes were cast, so there is no winner or tiebreaker.</p>';
+  if (tied.length === 1) return "";
+  const runoff = activePoll.roundNumber === 2;
+  const explanation = runoff
+    ? "The runoff is still tied. The organizer can make one recorded, equal-chance random draw among these tied books."
+    : "The organizer can open a 5-hour runoff with just these tied books. Everyone gets a fresh vote on the same link.";
+  const button = activePoll.isAdmin
+    ? `<button class="primary" id="${runoff ? "drawWinner" : "startRunoff"}" type="button">${runoff ? "Draw a winner" : "Start tiebreaker · 5 hours"}</button>` : "";
+  return `<div class="result-notice"><h2>${tied.length}-way tie</h2><p class="help">${explanation}</p>${button}</div>`;
+}
+
+function roundHistory() {
+  const history = activePoll.roundHistory || [];
+  if (!history.length) return "";
+  return `<details class="round-history"><summary>First-round results · ${history[0].voteCount} votes</summary><div class="results-list">${history[0].books.map(book => `<article class="book-card"><div><p class="book-title">${escapeHtml(book.title)}</p><p class="book-meta">${escapeHtml(book.author)}</p></div><div class="result-count">${history[0].results.votesByBook[book.id] || 0}</div></article>`).join("")}</div></details>`;
 }
 
 async function submitVote(bookId) {
@@ -235,7 +265,7 @@ function renderPoll() {
   pollView.classList.remove("hidden");
   const nominating = activePoll.phase === "nominations";
   setStatus(nominating ? "Nominations" : activePoll.closed ? "Closed" : "Voting");
-  pollState.textContent = nominating ? "Collecting the next shortlist" : activePoll.closed ? "Final results" : "Open ballot";
+  pollState.textContent = nominating ? "Collecting the next shortlist" : activePoll.closed ? "Final results" : activePoll.roundNumber === 2 ? "Tiebreaker · Round 2" : "Open ballot";
   pollName.textContent = activePoll.title;
   shareLink.value = absoluteUrl(`/poll/${activePoll.id}`);
   closeNow.classList.toggle("hidden", !activePoll.isAdmin || activePoll.closed || nominating);
@@ -407,7 +437,7 @@ async function refreshPoll() {
   try {
     const params = adminKey() ? `?admin=${encodeURIComponent(adminKey())}` : "";
     const { poll } = await api(`/api/polls/${activePoll.id}${params}`);
-    const changedPhase = poll.phase !== activePoll.phase || poll.closed !== activePoll.closed;
+    const changedPhase = poll.phase !== activePoll.phase || poll.closed !== activePoll.closed || poll.roundNumber !== activePoll.roundNumber || poll.randomDraw?.winnerId !== activePoll.randomDraw?.winnerId;
     activePoll = poll;
     if (changedPhase) {
       renderPoll();
@@ -442,7 +472,8 @@ async function organizerAction(action, prompt) {
     });
     activePoll = poll;
     renderPoll();
-    message(action === "start" ? "Voting is open. Share the same member link with the club." : "Voting is closed. Results are ready.", true);
+    const notices = { start: "Voting is open. Share the same member link with the club.", close: "Voting is closed. Results are ready.", runoff: "The 5-hour runoff is open. Share the same member link again.", draw: "The random-draw winner is recorded. No votes were changed." };
+    message(notices[action], true);
   } catch (error) { message(error.message); }
 }
 document.querySelector("#startVoting").addEventListener("click", () => organizerAction("start", `Everyone ready? This locks the member list and recommendations, and starts ${activePoll.durationHours} hours of voting.`));
